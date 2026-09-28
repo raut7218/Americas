@@ -77,7 +77,8 @@ def vs_badge(img, cx, cy, r):
 
 def backgrounds(size):
     storm = scene_frame("open", 1.62)   # a lightning frame
-    gold = scene_frame("fleet", 3.0)
+    tl = {s["id"]: s for s in json.load(open(f"{BUILD}/timeline.json"))["scenes"]}
+    gold = scene_frame("fleet", tl["fleet"]["dur"] - 0.6)  # after the ship-name labels fade
     storm = grade(storm, (0.8, 0.95, 1.25))
     gold = grade(gold, (1.2, 1.0, 0.75))
     return fit(storm, size), fit(gold, size)

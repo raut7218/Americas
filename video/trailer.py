@@ -51,7 +51,7 @@ SHOTS = [
          vo="Then they met the people who already lived there."),
     dict(scene="axe", t="cue:strike-0.3", mode="crop", cx=0.52, hit=True, vo="And Erik's daughter took up an axe."),
     dict(scene="bridge", t=1.0, mode="crop", cx=0.58, vo="Then the world forgot, for five hundred years."),
-    dict(scene="fleet", t=0.8, mode="crop", cx=0.5, hit=True, vo="Until fourteen ninety-two."),
+    dict(scene="fleet", t=0.8, mode="crop", cx=0.5, hit=True, vo="Until fourteen ninety-two.", cap="Until 1492."),
     dict(scene="landing", t="cue:trade-0.5", mode="frame", vo="Columbus promised gold. He found paradise."),
     dict(scene="census", t="cue:word+2.0", mode="frame", hit=True, vo="And within a generation, its people were gone."),
     dict(scene="chains", t="cue:chains+0.2", mode="crop", cx=0.5, vo="He died disgraced, still sure he'd reached India."),
@@ -184,7 +184,7 @@ def reframe(src, mode, cx, zoom):
     bg = cv2.GaussianBlur(bg, (0, 0), 6)
     bg = cv2.resize(bg, (VW, VH), interpolation=cv2.INTER_LINEAR)
     bg = cv2.convertScaleAbs(bg, alpha=0.45)
-    fw = int(VW * zoom * 1.12)  # slightly wider than the screen: trims the sides a touch, feels bigger
+    fw = int(VW * (1 + 0.3 * (zoom - 1)))  # gentle push-in; the full frame (incl. side text) stays visible
     fh = int(fw * H / W)
     fr = cv2.resize(a, (fw, fh), interpolation=cv2.INTER_AREA)
     fx = (VW - fw) // 2
@@ -257,7 +257,7 @@ def render_shot(args):
         spec = next(s for s in SCENES if s["id"] == sh["scene"])
         sc = REG[spec["kind"]](spec, by[sh["scene"]])
         t0 = resolve_t(sc, sh["t"])
-    words = word_times(sh["vo"], LEAD, sh["vo_len"])
+    words = word_times(sh.get("cap", sh["vo"]), LEAD, sh["vo_len"])  # on-screen text may differ from the spoken form
     grp = groups(words)
     n = int(round(sh["dur"] * FPS))
     cmd = [FFMPEG, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{VW}x{VH}", "-r", str(FPS),
