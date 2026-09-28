@@ -53,10 +53,20 @@ def thumbnail(path):
 def main():
     os.makedirs(OUT, exist_ok=True)
     mp4 = f"{OUT}/{NAME}.mp4"
-    subprocess.check_call([FFMPEG, "-y", "-loglevel", "error", "-i", f"{BUILD}/video_only.mp4", "-i", f"{BUILD}/mix.wav",
-                           "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-                           "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+    # loudness-normalize once, then reuse the audio for both encodes
+    aud = f"{BUILD}/mix_norm.m4a"
+    subprocess.check_call([FFMPEG, "-y", "-loglevel", "error", "-i", f"{BUILD}/mix.wav",
+                           "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", aud])
+    # 1080p upload master, bitrate-capped near YouTube's 1080p24 recommendation
+    subprocess.check_call([FFMPEG, "-y", "-loglevel", "error", "-i", f"{BUILD}/video_only.mp4", "-i", aud,
+                           "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "faster", "-crf", "21",
+                           "-maxrate", "7M", "-bufsize", "14M", "-pix_fmt", "yuv420p", "-c:a", "copy",
                            "-shortest", "-movflags", "+faststart", mp4])
+    # lightweight 720p preview for phones / quick sharing
+    subprocess.check_call([FFMPEG, "-y", "-loglevel", "error", "-i", f"{BUILD}/video_only.mp4", "-i", aud,
+                           "-map", "0:v", "-map", "1:a", "-vf", "scale=1280:720", "-c:v", "libx264", "-preset", "faster",
+                           "-crf", "26", "-maxrate", "2M", "-bufsize", "4M", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                           "-shortest", "-movflags", "+faststart", f"{OUT}/{NAME}_720p_preview.mp4"])
     write_srt(f"{OUT}/{NAME}.en.srt")
     thumbnail(f"{OUT}/{NAME}_thumbnail.jpg")
     print("wrote", mp4, os.path.getsize(mp4) / 1e6, "MB")

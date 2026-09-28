@@ -151,9 +151,9 @@ def paste_alpha(base, layer, alpha, pos=(0, 0)):
     if alpha <= 0:
         return
     if alpha < 1:
-        a = layer.getchannel("A").point(lambda v: int(v * alpha))
-        layer = layer.copy()
-        layer.putalpha(a)
+        a = layer.getchannel("A").point([int(v * alpha) for v in range(256)])
+        base.paste(layer, pos, a)
+        return
     base.paste(layer, pos, layer)
 
 
@@ -385,14 +385,29 @@ def caravel(scale=1.0, sail=(215, 200, 170), cross=(160, 25, 25), hull=(20, 14, 
     return im
 
 
+_ROT = {}
+
+
+def rotated(im, angle):
+    """Rotated sprite, cached with the angle quantized to 0.25 degrees."""
+    q = round(angle * 4)
+    key = (id(im), q)
+    r = _ROT.get(key)
+    if r is None:
+        if len(_ROT) > 3000:
+            _ROT.clear()
+        r = _ROT[key] = im.rotate(q / 4, resample=Image.BICUBIC, expand=True)
+    return r
+
+
 def rotate_paste(base, im, x, y, angle, alpha=1.0):
     """Paste ship image so its waterline center lands at (x, y)."""
-    r = im.rotate(angle, resample=Image.BICUBIC, expand=True)
+    r = rotated(im, angle)
     ox = int(x - r.width / 2)
     oy = int(y - r.height / 2 - (im.height * 0.34) * math.cos(math.radians(angle)))
     if alpha < 1:
-        a = r.getchannel("A").point(lambda v: int(v * alpha))
-        r.putalpha(a)
+        base.paste(r, (ox, oy), r.getchannel("A").point([int(v * alpha) for v in range(256)]))
+        return
     base.paste(r, (ox, oy), r)
 
 
@@ -492,15 +507,13 @@ def text_size(txt, f, spacing=0):
     return f.getlength(txt), b[3]
 
 
-def draw_text(img, xy, txt, f, fill, alpha=1.0, anchor="mm", spacing=0, shadow=True, glow=None):
-    """Draw (optionally letter-spaced) text with soft shadow. img is RGB; uses an RGBA overlay."""
-    if alpha <= 0.01:
-        return
+@lru_cache(maxsize=1024)
+def _text_layer(txt, f, fill, spacing, shadow, glow):
+    """Render (and cache) a text sprite with its shadow/glow; the blur is the expensive part."""
     tw, th = text_size(txt, f, spacing)
     pad = 60
     lw, lh = int(tw + pad * 2), int(f.size * 1.6 + pad * 2)
     lay = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
-    ld = ImageDraw.Draw(lay)
     y0 = pad + f.size * 0.8
 
     def put(dd, col):
@@ -517,8 +530,17 @@ def draw_text(img, xy, txt, f, fill, alpha=1.0, anchor="mm", spacing=0, shadow=T
         put(ImageDraw.Draw(sh), rgba(glow or (0, 0, 0), 0.9 if glow else 0.85))
         sh = sh.filter(ImageFilter.GaussianBlur(f.size * (0.25 if glow else 0.12)))
         lay = Image.alpha_composite(lay, sh)
-        ld = ImageDraw.Draw(lay)
-    put(ld, rgba(fill, 1))
+    put(ImageDraw.Draw(lay), rgba(fill, 1))
+    return lay, pad, y0
+
+
+def draw_text(img, xy, txt, f, fill, alpha=1.0, anchor="mm", spacing=0, shadow=True, glow=None):
+    """Draw (optionally letter-spaced) text with soft shadow. img is RGB; sprites are cached."""
+    if alpha <= 0.01 or not txt:
+        return
+    lay, pad, y0 = _text_layer(txt, f, tuple(int(c) for c in fill), int(spacing), bool(shadow),
+                               tuple(int(c) for c in glow) if glow else None)
+    lw = lay.width
     x, y = xy
     ax, ay = anchor
     ox = {"l": x - pad, "m": x - lw / 2, "r": x - lw + pad}[ax]
@@ -555,25 +577,86 @@ def emoji(ch, size):
 # ---------------------------------------------------------------- film finish
 _yy, _xx = np.mgrid[0:H, 0:W].astype(np.float32)
 _vig = 1 - 0.55 * np.clip(((_xx - W / 2) / (W * 0.62)) ** 2 + ((_yy - H / 2) / (H * 0.78)) ** 2, 0, 1) ** 1.3
-VIGNETTE = _vig[..., None].astype(np.float32)
+VIGNETTE = Image.fromarray((_vig * 255).astype(np.uint8)).convert("RGB")
 del _yy, _xx, _vig
-_g = rng(99)
-GRAIN = [(_g.normal(0, 1, (H // 2, W // 2)).astype(np.float32)) for _ in range(6)]
+_GRAIN_CACHE = {}
+WHITE = None
+
+
+def grain_frames(amp, n=6):
+    """Full-res grain split into (+) and (-) parts so it can be applied with saturating C ops."""
+    if amp not in _GRAIN_CACHE:
+        g = rng(99)
+        frames = []
+        for _ in range(n):
+            a = g.normal(0, 1, (H // 2, W // 2)).astype(np.float32) * amp
+            a = np.repeat(np.repeat(a, 2, 0), 2, 1)
+            pos = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).convert("RGB")
+            neg = Image.fromarray(np.clip(-a, 0, 255).astype(np.uint8)).convert("RGB")
+            frames.append((pos, neg))
+        _GRAIN_CACHE[amp] = frames
+    return _GRAIN_CACHE[amp]
+
+
+try:
+    import cv2
+    cv2.setNumThreads(1)  # we already run one process per core
+except ImportError:  # pure-PIL fallback below
+    cv2 = None
+_CV = {}
+
+
+def _cv_film(img, t, fade, grain, flash):
+    """Vignette + grain + flash + fade on uint8 arrays with OpenCV's SIMD kernels."""
+    if "vig" not in _CV:
+        _CV["vig"] = np.asarray(VIGNETTE, np.uint8).copy()
+    if grain and grain not in _CV:
+        _CV[grain] = [(np.asarray(p).copy(), np.asarray(n).copy()) for p, n in grain_frames(float(grain))]
+    a = np.asarray(img)
+    out = cv2.multiply(a, _CV["vig"], scale=1 / 255)
+    if grain:
+        pos, neg = _CV[grain][int(t * FPS) % 6]
+        cv2.add(out, pos, dst=out)
+        cv2.subtract(out, neg, dst=out)
+    if flash > 0.003:
+        out = cv2.addWeighted(out, 1 - min(1.0, flash), out, 0, 255 * min(1.0, flash))
+    if fade < 0.999:
+        out = cv2.convertScaleAbs(out, alpha=fade)
+    return Image.fromarray(out)
+
+
+def zoom_crop(img, box):
+    """Camera move: scale the box region to full frame (OpenCV when available)."""
+    if cv2 is None:
+        return img.resize((W, H), Image.BILINEAR, box=box)
+    x0, y0, x1, y1 = box
+    sx, sy = W / (x1 - x0), H / (y1 - y0)
+    M = np.array([[sx, 0, -x0 * sx], [0, sy, -y0 * sy]], np.float32)
+    return Image.fromarray(cv2.warpAffine(np.asarray(img), M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE))
 
 
 def finish(img, t, fade=1.0, grain=6.0, tint=None, caption=None, stamp=None, stamp_alpha=0.0, flash=0.0):
-    arr = np.asarray(img, np.float32)
+    global WHITE
+    if cv2 is not None and tint is None:
+        out = _cv_film(img, t, fade, grain, flash)
+        return _overlays(out, t, fade, caption, stamp, stamp_alpha)
+    out = img
     if tint is not None:
-        arr = arr * np.array(tint, np.float32)[None, None, :]
-    arr = arr * VIGNETTE
+        out = out.point([int(v * tint[c]) for c in range(3) for v in range(256)])
+    out = ImageChops.multiply(out, VIGNETTE)
     if grain:
-        g = GRAIN[int(t * FPS) % len(GRAIN)]
-        g = np.repeat(np.repeat(g, 2, 0), 2, 1)[..., None]
-        arr = arr + g * grain
-    if flash:
-        arr = arr + (255 - arr) * flash
-    arr = arr * fade
-    out = Image.fromarray(arr.clip(0, 255).astype(np.uint8))
+        pos, neg = grain_frames(float(grain))[int(t * FPS) % 6]
+        out = ImageChops.subtract(ImageChops.add(out, pos), neg)
+    if flash > 0.003:
+        if WHITE is None:
+            WHITE = Image.new("RGB", (W, H), (255, 255, 255))
+        out = Image.blend(out, WHITE, min(1.0, flash))
+    if fade < 0.999:
+        out = out.point([int(v * fade) for v in range(256)] * 3)
+    return _overlays(out, t, fade, caption, stamp, stamp_alpha)
+
+
+def _overlays(out, t, fade, caption, stamp, stamp_alpha):
     d = ImageDraw.Draw(out)
     d.rectangle([0, 0, W, BAR], fill=(0, 0, 0))
     d.rectangle([0, H - BAR, W, H], fill=(0, 0, 0))

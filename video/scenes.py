@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 import maps
-from engine import (BAR, FPS, H, W, Particles, bust, caravel, clamp, draw_stars, draw_text, ease_in_out, ease_out,
+from engine import (zoom_crop, BAR, FPS, H, W, Particles, bust, caravel, clamp, draw_stars, draw_text, ease_in_out, ease_out,
                     emoji, finish, font, glow_layer, lerp, longship, mix, noise1d, noise2d, palm, paste_alpha, pine,
                     radial, ramp, rgba, ridge_points, rim_light, rng, rotate_paste, screen, smooth, stars_layer, vgrad,
                     wrap)
@@ -68,7 +68,7 @@ class Scene:
         if abs(z - 1) > 1e-3:
             cw, ch = W / z, H / z
             x0, y0 = (W - cw) / 2, (H - ch) / 2
-            img = img.transform((W, H), Image.EXTENT, (x0, y0, x0 + cw, y0 + ch), Image.BILINEAR)
+            img = zoom_crop(img, (x0, y0, x0 + cw, y0 + ch))
         fade = min(ramp(t, 0, self.fade_in) if self.fade_in else 1, 1 - ramp(t, self.dur - self.fade_out, self.fade_out) if self.fade_out else 1)
         stamp = self.p.get("stamp")
         sa = ramp(t, 0.6, 1.0) * (1 - ramp(t, 6.5, 1.0)) if stamp else 0
@@ -434,8 +434,11 @@ class ChapterScene(Scene):
         draw_text(img, (W / 2, 390), f"CHAPTER {self.p['num']}", font("title", 36), (200, 180, 140), alpha=ramp(t, 0.2, 0.6), spacing=14)
         tt = self.p["title"]
         size = 104 if len(tt) < 16 else 82 if len(tt) < 24 else 64
-        draw_text(img, (W / 2, 520), tt, font("deco", size), (245, 232, 200), alpha=ramp(t, 0.4, 0.8),
-                  spacing=int(lerp(30, 8, ease_out(t / 3))), glow=(150, 90, 30))
+        f = font("deco", size)
+        base = sum(f.getlength(ch) for ch in tt)
+        smax = max(8, min(30, (W - 200 - base) / max(1, len(tt) - 1)))
+        draw_text(img, (W / 2, 520), tt, f, (245, 232, 200), alpha=ramp(t, 0.4, 0.8),
+                  spacing=int(lerp(smax, 8, ease_out(t / 3))), glow=(150, 90, 30))
         w_ = 380 * ramp(t, 0.7, 1.0)
         d = ImageDraw.Draw(img)
         d.line([(W / 2 - w_, 610), (W / 2 + w_, 610)], fill=(180, 140, 70), width=2)
@@ -761,12 +764,11 @@ class GreenlandScene(Scene):
         a = ramp(t, c1, 0.8) * (1 - ramp(t, self.cue(1), 0.8))
         draw_text(img, (W / 2, 330), "≈ 80%", font("deco", 140), (230, 245, 255), alpha=a, glow=(60, 140, 200))
         draw_text(img, (W / 2, 450), "BENEATH THE ICE", font("title", 44), (210, 230, 240), alpha=a, spacing=10)
-        if c2 is not None:
-            for i, x in enumerate([260, 330, 420, 1580, 1650]):
-                aa = ramp(t, c2 + i * 0.4, 0.6)
-                if aa > 0:
-                    gl = glow_layer((W, H), lambda dd, k, x=x: dd.ellipse([(x - 12) * k, 690 * k, (x + 12) * k, 712 * k], fill=(255, 170, 70)), 16)
-                    img = Image.blend(img, screen(img, gl), aa)
+        if c2 is not None and t > c2:
+            lights = [(x, ramp(t, c2 + i * 0.4, 0.6)) for i, x in enumerate([260, 330, 420, 1580, 1650])]
+            gl = glow_layer((W, H), lambda dd, k: [dd.ellipse([(x - 12) * k, 690 * k, (x + 12) * k, 712 * k], fill=mix((0, 0, 0), (255, 170, 70), a_))
+                                                    for x, a_ in lights], 16)
+            img = screen(img, gl)
         self.snow.draw(ImageDraw.Draw(img), t, (230, 240, 250), alpha=0.8)
         return img
 
@@ -1059,7 +1061,7 @@ class MapScene(Scene):
     def draw(self, t):
         x0, y0, z = self.cam(t)
         cw, ch = W / z, H / z
-        img = self.map.transform((W, H), Image.EXTENT, (x0, y0, x0 + cw, y0 + ch), Image.BILINEAR)
+        img = zoom_crop(self.map, (x0, y0, x0 + cw, y0 + ch))
 
         def P(x, y):
             return (x - x0) * z, (y - y0) * z
@@ -1067,7 +1069,7 @@ class MapScene(Scene):
         if self.p.get("spanish"):
             a = ramp(t, self.cue(1), 1.0)
             if a > 0:
-                m = self.us.transform((W, H), Image.EXTENT, (x0, y0, x0 + cw, y0 + ch), Image.BILINEAR)
+                m = self.us.resize((W, H), Image.BILINEAR, box=(x0, y0, x0 + cw, y0 + ch))
                 m = m.point(lambda v: int(v * a * (0.45 + 0.1 * math.sin(t * 3))))
                 img = Image.composite(Image.new("RGB", (W, H), (200, 150, 60)), img, m)
         light = Image.new("RGB", (W, H))
@@ -1092,7 +1094,7 @@ class MapScene(Scene):
                 d.ellipse([hx - 9, hy - 9, hx + 9, hy + 9], fill=(255, 245, 220))
             else:
                 d.polygon(self.arrow(pts), fill=col)
-        img = screen(img, light.filter(ImageFilter.GaussianBlur(8)))
+        img = screen(img, light.resize((W // 4, H // 4), Image.BILINEAR).filter(ImageFilter.GaussianBlur(2)).resize((W, H), Image.BILINEAR))
         for lb in self.p["labels"]:
             c = self.cue(lb["cue"])
             a = ramp(t, c, 0.8)

@@ -43,7 +43,7 @@ def render_scene(args):
     n = int(round(tl["dur"] * FPS))
     tmp = out + ".part.mp4"
     cmd = [FFMPEG, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS),
-           "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", tmp]
+           "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-tune", "grain", "-pix_fmt", "yuv420p", tmp]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for i in range(n):
         p.stdin.write(sc.render(i / FPS).tobytes())

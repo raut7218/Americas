@@ -19,7 +19,7 @@ animated entirely in code (no stock footage or stock music).
 ## Build
 
 ```bash
-pip install pillow numpy scipy soundfile kokoro-onnx imageio-ffmpeg
+pip install pillow numpy scipy soundfile kokoro-onnx imageio-ffmpeg opencv-python-headless
 # Kokoro model files -> models/ (kokoro-v1.0.onnx, voices-v1.0.bin from
 # https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0)
 python3 tts.py        # narration + timeline      -> build/vo.wav, build/timeline.json
@@ -29,6 +29,22 @@ python3 finalize.py   # mux, loudnorm, SRT, thumb -> output/
 ```
 
 `python3 render.py --preview <scene_id,...|all>` writes still frames for quick review.
+
+## Performance
+
+Rendering runs one process per core, and each process pipes raw frames into its own x264 encoder.
+Per-frame cost was cut about 2.5–4× by these changes:
+
+- **Film pass** (vignette, grain, flash, fade) uses saturating uint8 OpenCV kernels instead of float numpy.
+  The grain is precomputed at full resolution as separate +/− planes. There is a pure-PIL fallback
+  if OpenCV is missing, and the output matches it within ±2 levels.
+- **Camera moves** use `cv2.warpAffine` (or PIL `resize(box=…)`) instead of PIL's affine `transform`.
+- **Text sprites** (glyphs plus blurred shadow/glow) are cached, so each title is rendered and blurred once
+  rather than on every frame.
+- **Ship rotations** are cached, with angles quantized to 0.25°.
+- **Glows** are blurred at quarter resolution and upscaled. Several lights are batched into one glow layer.
+- **Segment encoding** uses x264 `veryfast` with `-tune grain`. `finalize.py` makes the bitrate-capped
+  delivery encode.
 
 ## Files
 

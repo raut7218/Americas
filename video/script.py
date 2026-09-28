@@ -340,7 +340,7 @@ SCENES = [
          quote="“They should be good servants.”", who="CHRISTOPHER COLUMBUS · JOURNAL, OCTOBER 1492",
          vo=["That night, Columbus wrote in his journal:",
              "They should be good servants."]),
-    dict(id="caribbean", kind="map", mood="tension", view=(-88, -58, 8, 30),
+    dict(id="caribbean", kind="map", mood="tension", view=(-88, -58, 12, 34),
          routes=[dict(pts=[(-74.5, 24.05), (-75.5, 22.8), (-76.2, 21.3)], cue=1),
                  dict(pts=[(-76.2, 21.3), (-74.5, 20.5), (-72.8, 20.0), (-72.1, 19.75)], cue=2)],
          labels=[dict(t="SAN SALVADOR", sub="First landfall", at=(-72.5, 25.8), cue=0, dot=(-74.5, 24.05)),
